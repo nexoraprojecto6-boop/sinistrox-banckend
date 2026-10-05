@@ -15,7 +15,8 @@
 //   'trend_following'        → TrendFollowingStrategy
 //   'scalper'                → ScalperStrategy (DIGITOVER + Gale)
 //   'alfha'                  → AlfhaStrategy (DIGITOVER/DIGITUNDER conforme o dígito + Gale)
-//   'over1_recovery'         → Over1RecoveryStrategy (DIGITOVER 1 + Gale de recuperação por payout real) — nome de exibição: "Turbo Strike"
+//   'over1_recovery'         → Over1RecoveryStrategy (DIGITOVER 1 + Gale de recuperação por payout real) — nome de exibição: "ETHEREUM"
+//   'even_odd_recovery'      → EvenOddRecoveryStrategy (DIGITEVEN/DIGITODD + Gale de recuperação por payout real) — nome de exibição: "LITECOIN"
 //
 // ACESSO:
 //   Apenas o administrador gere este ficheiro.
@@ -38,7 +39,7 @@ const CATALOG_BOTS: CreateCatalogBotDto[] = [
   // Usa ScalpingStrategy com maxConsecutiveLosses: 0 (sem pausa
   // automática por perdas consecutivas).
   {
-    name:        'Titan Colossal',
+    name:        'GPT5.6',
     description: 'Abre contratos alternando CALL e PUT com stake fixo de $1. Sem ajuste de stake. Para automaticamente ao atingir $20 de perda ou $50 de lucro. Ideal para testar a ligação e ver o fluxo de trades em tempo real.',
     strategy:    'scalping',
     tags:        ['simples', 'iniciante', 'stake-fixo', 'teste'],
@@ -68,7 +69,7 @@ const CATALOG_BOTS: CreateCatalogBotDto[] = [
   // Progressão: $1 → $2 → $4 → $8 → $16 → $32 → $64 (tecto)
   // ATENÇÃO: risco elevado — usar apenas em conta demo.
   {
-    name:        'Plus Ultra',
+    name:        'MORGAM',
     description: 'Duplica o stake após cada perda e reseta no ganho. Recupera perdas rapidamente, mas o risco cresce exponencialmente. Progressão máxima: $1→$2→$4→$8→$16→$32→$64. Recomendado apenas em conta demo.',
     strategy:    'martingale',
     tags:        ['martingale', 'risco-alto', 'recuperação', 'demo'],
@@ -104,7 +105,7 @@ const CATALOG_BOTS: CreateCatalogBotDto[] = [
   // entre ticks; esta análise não constitui vantagem estatística
   // comprovada.
   {
-    name:        'Zeus',
+    name:        'SCALPER',
     description: 'Compra DIGITOVER 2 (1 tick) no Volatility 100 (1s) Index sempre que o último dígito é baixo. Usa Gale (martingale) desde a 1ª perda, com pausa automática temporária ao atingir uma perda acumulada. Recomendado apenas em conta demo.',
     strategy:    'scalper',
     tags:        ['digitos', 'gale', 'risco-alto', 'demo'],
@@ -141,7 +142,7 @@ const CATALOG_BOTS: CreateCatalogBotDto[] = [
   // perda acumulada.
   // ATENÇÃO: alto risco — usar apenas em conta demo.
   {
-    name:        'Kronos',
+    name:        'ALFHA',
     description: 'Compra DIGITOVER 2 ou DIGITUNDER 7 (1 tick) no Volatility 100 Index conforme o último dígito observado. Usa Gale (martingale) desde a 1ª perda, com pausa automática temporária ao atingir uma perda acumulada. Recomendado apenas em conta demo.',
     strategy:    'alfha',
     tags:        ['digitos', 'gale', 'risco-alto', 'demo'],
@@ -170,9 +171,9 @@ const CATALOG_BOTS: CreateCatalogBotDto[] = [
   },
 
   // ──────────────────────────────────────────────────────────
-  // BOT 5 — Turbo Strike (Digit Over 1 + Gale de Recuperação)
+  // BOT 5 — ETHEREUM (Digit Over 1 + Gale de Recuperação)
   // ──────────────────────────────────────────────────────────
-  // Nome de exibição "Turbo Strike"; estratégia interna continua
+  // Nome de exibição "ETHEREUM"; estratégia interna continua
   // 'over1_recovery' (não confundir com o ativo cripto Ethereum —
   // é só o nome comercial escolhido para este bot).
   //
@@ -192,7 +193,7 @@ const CATALOG_BOTS: CreateCatalogBotDto[] = [
   // entre ticks; recuperar a perda + margem não muda o valor
   // esperado do jogo, só muda o formato do risco.
   {
-    name:        'Turbo Strike',
+    name:        'ETHEREUM',
     description: 'Compra DIGITOVER 1 (1 tick) no Volatility 100 (1s) Index sempre que o último dígito é baixo. Na 1ª perda, tenta recuperar 100% do valor + 10% consultando o payout real. Em perdas seguidas, protege a banca entrando com stake reduzido em vez de continuar escalando. Recomendado apenas em conta demo.',
     strategy:    'over1_recovery',
     tags:        ['digitos', 'gale', 'recuperação', 'risco-alto', 'demo'],
@@ -210,6 +211,64 @@ const CATALOG_BOTS: CreateCatalogBotDto[] = [
       maxProfit:    5,
       strategyParams: {
         digitBarrier:           1,    // Over 1 — perde se o dígito for 0 ou 1
+        recoveryMarginPercent:  10,   // margem extra de +10% sobre o stake inicial (só na 1ª perda)
+        protectiveStakePercent: 25,   // % do stake inicial usado a partir da 2ª perda seguida
+        maxMartingaleSteps:     6,    // teto de perdas seguidas antes de cortar e resetar
+        maxStakeCap:            50,   // teto absoluto de stake — nunca ultrapassado
+        minStake:               0.35, // piso de stake (mínimo aceito pela Deriv)
+        pauseLossLimit:         20,   // pausa temporária ao acumular $20 de perda
+        pauseSeconds:           10,   // duração da pausa automática
+        decimalPlaces:          2,    // casas decimais do símbolo
+      },
+    },
+  },
+
+  // ──────────────────────────────────────────────────────────
+  // BOT 6 — LITECOIN (Digit Even/Odd + Gale de Recuperação)
+  // ──────────────────────────────────────────────────────────
+  // Nome de exibição "LITECOIN"; estratégia interna
+  // 'even_odd_recovery' (não confundir com o ativo cripto Litecoin —
+  // é só o nome comercial escolhido para este bot, no mesmo padrão
+  // do ETHEREUM).
+  //
+  // Compra DIGITEVEN (1 tick) sempre que os últimos `streakTrigger`
+  // dígitos observados forem todos ímpares em sequência.
+  //   • 1ª perda do ciclo: consulta o payout real da Deriv e calcula
+  //     o stake exato para recuperar 100% do valor perdido + uma
+  //     margem extra (recoveryMarginPercent).
+  //   • 2ª perda SEGUIDA em diante: em vez de continuar escalando,
+  //     derruba o nível — entra com um stake pequeno e protegido
+  //     (protectiveStakePercent, % do stake inicial) até ganhar
+  //     (reseta o ciclo) ou até a pausa automática entrar.
+  // Sempre respeitando um teto absoluto de stake (maxStakeCap) e um
+  // teto de perdas seguidas (maxMartingaleSteps).
+  // ATENÇÃO: alto risco — usar apenas em conta demo. Cada tick em
+  // índices sintéticos é estatisticamente independente do anterior;
+  // uma sequência de dígitos ímpares NÃO aumenta a probabilidade do
+  // próximo ser par (falácia do apostador). O streakTrigger é só um
+  // filtro de entrada, não uma previsão real, e recuperar a perda +
+  // margem não muda o valor esperado do jogo, só muda o formato do
+  // risco.
+  {
+    name:        'LITECOIN',
+    description: 'Compra DIGITEVEN (1 tick) no Volatility 100 (1s) Index após uma sequência de dígitos ímpares seguidos. Na 1ª perda, tenta recuperar 100% do valor + 10% consultando o payout real. Em perdas seguidas, protege a banca entrando com stake reduzido em vez de continuar escalando. Recomendado apenas em conta demo.',
+    strategy:    'even_odd_recovery',
+    tags:        ['digitos', 'gale', 'recuperação', 'risco-alto', 'demo'],
+    isActive:    true,
+    createdBy:   'admin',
+    defaultConfig: {
+      symbol:       '1HZ100V',       // Volatility 100 (1s) Index
+      contractType: 'DIGITEVEN',
+      duration:     1,
+      durationUnit: 'ticks',
+      initialStake: 0.5,
+      currency:     'USD',
+      maxTrades:    0,
+      maxLoss:      40,
+      maxProfit:    5,
+      strategyParams: {
+        targetParity:           'even', // 'even' -> DIGITEVEN | 'odd' -> DIGITODD
+        streakTrigger:          4,     // entra após 4 ticks seguidos com paridade ímpar
         recoveryMarginPercent:  10,   // margem extra de +10% sobre o stake inicial (só na 1ª perda)
         protectiveStakePercent: 25,   // % do stake inicial usado a partir da 2ª perda seguida
         maxMartingaleSteps:     6,    // teto de perdas seguidas antes de cortar e resetar
