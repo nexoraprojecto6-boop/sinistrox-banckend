@@ -3,7 +3,7 @@
 // ============================================================
 
 export type BotStatus = 'idle' | 'running' | 'paused' | 'stopped' | 'error';
-export type BotStrategyType = 'scalping' | 'martingale' | 'anti_martingale' | 'trend_following' | 'scalper' | 'alfha' | 'over1_recovery';
+export type BotStrategyType = 'scalping' | 'martingale' | 'anti_martingale' | 'trend_following' | 'scalper' | 'alfha' | 'over1_recovery' | 'even_odd_recovery';
 export type TradeDirection = 'CALL' | 'PUT';
 
 // ─── Configuração base (comum a todas as estratégias) ────────
@@ -14,11 +14,13 @@ export interface BotConfig {
   duration: number;
   durationUnit: 'ticks' | 's' | 'm' | 'h' | 'd';
   initialStake: number;
-  currency: string;            // "USD"
+  currency: string;            // moeda da conta ativa (o servidor força este valor)
   maxTrades?: number;          // 0 = ilimitado
-  maxLoss?: number;            // para se perda total > valor
+  maxLoss?: number;            // para quando a perda LÍQUIDA (−netPnL) >= valor
   maxProfit?: number;          // para se lucro total > valor
   strategyParams?: Record<string, unknown>;
+  // strategyParams.fallbackSymbols?: string[]  → mercados alternativos, por ordem de
+  //   preferência, se o mercado do bot ficar fechado/suspenso/indisponível na conta.
 }
 
 // ─── Parâmetros específicos por estratégia ───────────────────
@@ -47,8 +49,10 @@ export interface ScalperParams {
   maxMartingaleSteps: number;  // nº de níveis de Gale antes de resetar o stake
   pauseLossLimit: number;      // perda acumulada que pausa o bot temporariamente (0 = desactivado)
   pauseSeconds: number;        // duração da pausa automática, em segundos
-  decimalPlaces?: number;      // nº de casas decimais do símbolo, usado para extrair
-                                //   o último dígito corretamente (padrão: 2 se omitido)
+  decimalPlaces?: number;      // casas decimais assumidas até chegar o 1.º tick (o pip_size real
+                                //   do tick tem prioridade). Padrão: 2
+  entryFilter?: boolean;       // true (padrão) = só entra quando o último dígito <= predictDigit;
+                                //   false = entra em todos os ticks (mais rápido)
 }
 
 // Parâmetros do bot ALFHA — opera Over e Under conforme o último dígito.
@@ -69,6 +73,28 @@ export interface AlfhaParams {
 // STOP LOSS / TAKE PROFIT ficam em config.maxLoss / config.maxProfit.
 export interface OverOneRecoveryParams {
   digitBarrier: number;           // barreira do DIGITOVER (fixo em 1 para "Over 1")
+  recoveryMarginPercent: number;  // margem extra sobre a perda acumulada (ex: 10 = +10%)
+  protectiveStakePercent: number; // % do stake inicial usado a partir da 2ª perda SEGUIDA
+                                    //   (protege a banca em vez de continuar escalando)
+  maxMartingaleSteps: number;     // teto de perdas seguidas (mesmo em modo protetor) antes de cortar e resetar
+  maxStakeCap: number;            // teto absoluto de stake — NUNCA ultrapassado,
+                                    //   mesmo que a recuperação fique incompleta
+  minStake?: number;              // piso de stake (evita stake residual ~0 por arredondamento)
+  pauseLossLimit: number;         // perda acumulada que pausa o bot temporariamente (0 = desativado)
+  pauseSeconds: number;           // duração da pausa automática, em segundos
+  decimalPlaces?: number;         // casas decimais do símbolo (padrão 2)
+}
+
+// Parâmetros do bot EVEN_ODD_RECOVERY (nome de exibição: "LITECOIN") —
+// Even ou Odd fixo (conforme targetParity), com gale de recuperação
+// (recupera a perda acumulada do ciclo + uma margem extra, calculado
+// sobre o payout real da Deriv). Entrada filtrada por uma sequência de
+// ticks seguidos com a paridade oposta (streakTrigger) — NÃO muda a
+// probabilidade real do próximo dígito, apenas decide quando entrar.
+// STOP LOSS / TAKE PROFIT ficam em config.maxLoss / config.maxProfit.
+export interface EvenOddRecoveryParams {
+  targetParity: 'even' | 'odd';   // 'even' -> DIGITEVEN | 'odd' -> DIGITODD
+  streakTrigger: number;          // nº de ticks seguidos com a paridade oposta antes de entrar
   recoveryMarginPercent: number;  // margem extra sobre a perda acumulada (ex: 10 = +10%)
   protectiveStakePercent: number; // % do stake inicial usado a partir da 2ª perda SEGUIDA
                                     //   (protege a banca em vez de continuar escalando)
@@ -132,9 +158,8 @@ export interface TradeResult {
   won: boolean;
   entryTick?: number;
   exitTick?: number;
-  exitDigit?: number;   // último algarismo do exitTick, já calculado pela
-                          // estratégia (evita recalcular no frontend com
-                          // casas decimais desconhecidas do símbolo)
+  exitDigit?: number;   // último algarismo de exit_spot (string original da Deriv),
+                          // com as casas decimais reais do símbolo
   entryTime: Date;
   exitTime?: Date;
 }
@@ -146,8 +171,7 @@ export interface TradeResult {
 //   automaticamente por ter atingido uma condição de paragem (take
 //   profit, stop de perda, ou limite de trades). payload.reason
 //   identifica qual: 'max_profit_reached' | 'max_loss_reached' |
-//   'max_trades_reached'. O frontend usa isto para mostrar a
-//   mensagem certa ("Meta atingida!", "Stop de perda atingido", etc).
+//   'max_trades_reached'.
 //
 // bot:insufficient_balance — emitido quando uma compra falha por
 //   saldo insuficiente na conta Deriv (erro InsufficientBalance da
@@ -202,18 +226,27 @@ export interface DerivWsAdapter {
     durationUnit: string;
     currency: string;
     barrier?: string;       // necessário para contratos de dígitos (DIGITOVER/DIGITUNDER)
-  }): Promise<{ contractId: string }>;
+  }): Promise<{
+    contractId: string;
+    payout?: number;
+    buyPrice?: number;
+    balanceAfter?: number;
+  }>;
 
   waitForContract(contractId: string): Promise<{
     profit: number;
     won: boolean;
     entryTick: number;
     exitTick: number;
+    entrySpot?: string;     // preço tal como a Deriv o envia (mantém zeros finais)
+    exitSpot?: string;
+    exitDigit?: number;     // último dígito de exitSpot — usar nas estratégias de dígitos
   }>;
 
+  // pipSize: casas decimais do símbolo, enviado pela Deriv em cada tick
   subscribeToTicks(
     symbol: string,
-    onTick: (price: number) => void,
+    onTick: (price: number, pipSize?: number) => void,
   ): { unsubscribe: () => void };
 
   // Pedido único de proposta (payout) sem comprar — usado pelas
