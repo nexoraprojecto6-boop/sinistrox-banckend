@@ -71,15 +71,10 @@ function monthRange(year: number, month: number): { from: string; to: string } {
  *   - ?month=7&year=2026        → relatório do mês inteiro
  *   - ?date_from=...&date_to=... → intervalo personalizado (YYYY-MM-DD)
  *
- * Relatório de comissão (markup) da APP LUCRO IA especificamente —
- * não da soma de todas as apps que possas ter registadas na Deriv.
- *
- * O token DERIV_MARKUP_TOKEN pertence ao afiliado/IB e pode reportar
- * várias apps de uma vez (uma linha por app_id no campo `breakdown`
- * da resposta da Deriv). Este endpoint filtra explicitamente pelo
- * app_id da Lucro IA (config.deriv.appId, mesma variável DERIV_APP_ID
- * já usada no resto do backend) e ignora as restantes apps do
- * afiliado — ver DerivAPIService.getAppMarkupStatistics().
+ * Relatório de comissão (markup) da app na Deriv. Usa o
+ * DERIV_MARKUP_TOKEN (token do dono da app, scope "Informações
+ * sobre o aplicativo" / application_read) — nunca o token de sessão
+ * de um utilizador comum.
  *
  * A comissão total é dividida 50/50 entre "Kelvin" e "Plataforma"
  * (commission_split na resposta) — percentagem fixa, ajustável aqui
@@ -123,29 +118,14 @@ router.get('/markup-statistics', requireLocalAuth, requireAdmin, async (req: Req
     return;
   }
 
-  // app_id da Lucro IA — a mesma variável DERIV_APP_ID já usada
-  // em todo o backend (headers Deriv-App-ID, OAuth, etc.). É por
-  // este valor que filtramos o breakdown da Deriv, para nunca
-  // misturar comissões de outras apps que possas ter no mesmo
-  // token de afiliado.
-  const lucroIaAppId = config.deriv.appId;
-  if (!lucroIaAppId) {
-    logger.error('[Admin] DERIV_APP_ID não configurado — impossível filtrar por app');
-    res.status(500).json({
-      error: 'APP_ID_MISSING',
-      message: 'DERIV_APP_ID não está configurado no servidor — não é possível isolar a comissão da Lucro IA.',
-    });
-    return;
-  }
-
   try {
     const deriv = new DerivAPIService(config.deriv.markupToken);
-    const appResult = await deriv.getAppMarkupStatistics(dateFrom, dateTo, lucroIaAppId);
-    const totalMarkup = appResult.total_app_markup_usd ?? 0;
+    const result = await deriv.getMarkupStatistics(dateFrom, dateTo);
+    const totalMarkup = result.data.total_app_markup_usd ?? 0;
 
-    // Divisão fixa 35/65 — ajustar aqui se o acordo de parceria mudar.
-    const KELVIN_PCT = 35;
-    const PLATFORM_PCT = 65;
+    // Divisão fixa 50/50 — ajustar aqui se o acordo de parceria mudar.
+    const KELVIN_PCT = 50;
+    const PLATFORM_PCT = 50;
     const commissionSplit = {
       kelvin: Number((totalMarkup * (KELVIN_PCT / 100)).toFixed(2)),
       platform: Number((totalMarkup * (PLATFORM_PCT / 100)).toFixed(2)),
@@ -153,23 +133,15 @@ router.get('/markup-statistics', requireLocalAuth, requireAdmin, async (req: Req
       platform_pct: PLATFORM_PCT,
     };
 
-    logger.info('[Admin] Markup statistics consultadas (app Lucro IA)', {
+    logger.info('[Admin] Markup statistics consultadas', {
       admin: req.localUser?.email,
-      appId: lucroIaAppId,
-      appFound: appResult.app_found,
       dateFrom,
       dateTo,
       totalMarkup,
     });
 
     res.json({
-      app_id: appResult.app_id,
-      app_found: appResult.app_found,
-      total_app_markup_usd: appResult.total_app_markup_usd,
-      total_volume_usd: appResult.total_volume_usd,
-      total_payout_usd: appResult.total_payout_usd,
-      total_contract_count: appResult.total_contract_count,
-      total_client_count: appResult.total_client_count,
+      ...result.data,
       date_from: dateFrom,
       date_to: dateTo,
       commission_split: commissionSplit,
