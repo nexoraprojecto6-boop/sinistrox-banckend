@@ -39,7 +39,7 @@ const CATALOG_BOTS: CreateCatalogBotDto[] = [
   // Usa ScalpingStrategy com maxConsecutiveLosses: 0 (sem pausa
   // automática por perdas consecutivas).
   {
-    name:        'TITAN',
+    name:        'TITAN COLOSSAL',
     description: 'Abre contratos alternando CALL e PUT com stake fixo de $1. Sem ajuste de stake. Para automaticamente ao atingir $20 de perda ou $50 de lucro. Ideal para testar a ligação e ver o fluxo de trades em tempo real.',
     strategy:    'scalping',
     tags:        ['simples', 'iniciante', 'stake-fixo', 'teste'],
@@ -69,7 +69,7 @@ const CATALOG_BOTS: CreateCatalogBotDto[] = [
   // Progressão: $1 → $2 → $4 → $8 → $16 → $32 → $64 (tecto)
   // ATENÇÃO: risco elevado — usar apenas em conta demo.
   {
-    name:        'COLOSSAL',
+    name:        'PLUS ULTRA',
     description: 'Duplica o stake após cada perda e reseta no ganho. Recupera perdas rapidamente, mas o risco cresce exponencialmente. Progressão máxima: $1→$2→$4→$8→$16→$32→$64. Recomendado apenas em conta demo.',
     strategy:    'martingale',
     tags:        ['martingale', 'risco-alto', 'recuperação', 'demo'],
@@ -105,7 +105,7 @@ const CATALOG_BOTS: CreateCatalogBotDto[] = [
   // entre ticks; esta análise não constitui vantagem estatística
   // comprovada.
   {
-    name:        'PLUS ULTRA',
+    name:        'HERMES',
     description: 'Compra DIGITOVER 2 (1 tick) no Volatility 100 (1s) Index sempre que o último dígito é baixo. Usa Gale (martingale) desde a 1ª perda, com pausa automática temporária ao atingir uma perda acumulada. Recomendado apenas em conta demo.',
     strategy:    'scalper',
     tags:        ['digitos', 'gale', 'risco-alto', 'demo'],
