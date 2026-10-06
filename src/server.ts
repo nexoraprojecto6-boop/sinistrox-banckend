@@ -30,15 +30,15 @@
 //      autenticação (reload/fechar separador), a ligação à Deriv abria
 //      depois da limpeza e ficava órfã para sempre (ping incluído),
 //      ocupando um dos 5 slots por utilizador. Agora é fechada.
-//   ✅ Fecho limpo (close frame + espera pelo 'close', máx. 1,5 s) do WS
+//   ✅ Fecho limpo (close frame + espera pelo 'close', máx. 1 s) do WS
 //      da Deriv em trocas de conta, sessão duplicada e limpeza. Antes:
 //      terminate() (TCP destruído sem close frame) e a nova ligação
 //      abria logo a seguir, com o slot ainda ocupado do lado da Deriv.
 //   ✅ Lock por conta: sessão duplicada + OTP + handshake correm UM de
 //      cada vez por accountId (antes: rajada de pedidos em paralelo).
-//   ✅ Espaçamento mínimo de 1,5 s entre handshakes da mesma conta.
-//   ✅ Retry NO SERVIDOR (até 4 tentativas, OTP novo em cada uma, backoff
-//      com jitter; em 429 o dobro). Antes: 1 falha → AUTH_TEMPORARY →
+//   ✅ Espaçamento mínimo de 1 s entre handshakes da mesma conta.
+//   ✅ Retry NO SERVIDOR (até 5 tentativas, OTP novo em cada uma, backoff
+//      curto com jitter: 0,6/1,2/2,4/4,8 s; em 429 o dobro). Antes: 1 falha → AUTH_TEMPORARY →
 //      ws.close() → o frontend reconectava e repetia o ciclo todo.
 //   ✅ Reconexão da Deriv respeita o lock/espaçamento e não corre em
 //      paralelo com uma autenticação; em 429 espera ≥ 5 s.
@@ -96,10 +96,10 @@ const CLIENT_REQ_ID_LIMIT  = 1_000_000; // req_id do cliente < 1M; internos >= 1
 const MAX_CLIENT_SUBS      = 200;
 
 // ─── Ligação à Deriv (anti-429) ───────────────────────────────
-const UPSTREAM_CLOSE_WAIT_MS        = 1_500; // espera pelo close frame antes de terminate()
-const UPSTREAM_MIN_GAP_MS           = 1_500; // mínimo entre handshakes da mesma conta
-const UPSTREAM_CONNECT_TRIES        = 4;     // tentativas por autenticação
-const UPSTREAM_RETRY_BASE_MS        = 1_500;
+const UPSTREAM_CLOSE_WAIT_MS        = 1_000; // espera pelo close frame antes de terminate()
+const UPSTREAM_MIN_GAP_MS           = 1_000; // mínimo entre handshakes da mesma conta
+const UPSTREAM_CONNECT_TRIES        = 5;     // tentativas por autenticação
+const UPSTREAM_RETRY_BASE_MS        = 600;   // 0,6 / 1,2 / 2,4 / 4,8 s (o dobro em 429)
 const UPSTREAM_RETRY_MAX_MS         = 8_000;
 const UPSTREAM_RATE_LIMIT_FLOOR_MS  = 5_000; // reconexão após 429: espera mínima
 
