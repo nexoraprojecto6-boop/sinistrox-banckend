@@ -39,7 +39,7 @@ const CATALOG_BOTS: CreateCatalogBotDto[] = [
   // Usa ScalpingStrategy com maxConsecutiveLosses: 0 (sem pausa
   // automática por perdas consecutivas).
   {
-    name:        'GPT5.6',
+    name:        'TITAN',
     description: 'Abre contratos alternando CALL e PUT com stake fixo de $1. Sem ajuste de stake. Para automaticamente ao atingir $20 de perda ou $50 de lucro. Ideal para testar a ligação e ver o fluxo de trades em tempo real.',
     strategy:    'scalping',
     tags:        ['simples', 'iniciante', 'stake-fixo', 'teste'],
@@ -69,7 +69,7 @@ const CATALOG_BOTS: CreateCatalogBotDto[] = [
   // Progressão: $1 → $2 → $4 → $8 → $16 → $32 → $64 (tecto)
   // ATENÇÃO: risco elevado — usar apenas em conta demo.
   {
-    name:        'MORGAM',
+    name:        'COLOSSAL',
     description: 'Duplica o stake após cada perda e reseta no ganho. Recupera perdas rapidamente, mas o risco cresce exponencialmente. Progressão máxima: $1→$2→$4→$8→$16→$32→$64. Recomendado apenas em conta demo.',
     strategy:    'martingale',
     tags:        ['martingale', 'risco-alto', 'recuperação', 'demo'],
@@ -105,7 +105,7 @@ const CATALOG_BOTS: CreateCatalogBotDto[] = [
   // entre ticks; esta análise não constitui vantagem estatística
   // comprovada.
   {
-    name:        'SCALPER',
+    name:        'PLUS ULTRA',
     description: 'Compra DIGITOVER 2 (1 tick) no Volatility 100 (1s) Index sempre que o último dígito é baixo. Usa Gale (martingale) desde a 1ª perda, com pausa automática temporária ao atingir uma perda acumulada. Recomendado apenas em conta demo.',
     strategy:    'scalper',
     tags:        ['digitos', 'gale', 'risco-alto', 'demo'],
@@ -142,7 +142,7 @@ const CATALOG_BOTS: CreateCatalogBotDto[] = [
   // perda acumulada.
   // ATENÇÃO: alto risco — usar apenas em conta demo.
   {
-    name:        'ALFHA',
+    name:        'ZEUS',
     description: 'Compra DIGITOVER 2 ou DIGITUNDER 7 (1 tick) no Volatility 100 Index conforme o último dígito observado. Usa Gale (martingale) desde a 1ª perda, com pausa automática temporária ao atingir uma perda acumulada. Recomendado apenas em conta demo.',
     strategy:    'alfha',
     tags:        ['digitos', 'gale', 'risco-alto', 'demo'],
@@ -193,7 +193,7 @@ const CATALOG_BOTS: CreateCatalogBotDto[] = [
   // entre ticks; recuperar a perda + margem não muda o valor
   // esperado do jogo, só muda o formato do risco.
   {
-    name:        'ETHEREUM',
+    name:        'KRONOS',
     description: 'Compra DIGITOVER 1 (1 tick) no Volatility 100 (1s) Index sempre que o último dígito é baixo. Na 1ª perda, tenta recuperar 100% do valor + 10% consultando o payout real. Em perdas seguidas, protege a banca entrando com stake reduzido em vez de continuar escalando. Recomendado apenas em conta demo.',
     strategy:    'over1_recovery',
     tags:        ['digitos', 'gale', 'recuperação', 'risco-alto', 'demo'],
@@ -250,7 +250,7 @@ const CATALOG_BOTS: CreateCatalogBotDto[] = [
   // margem não muda o valor esperado do jogo, só muda o formato do
   // risco.
   {
-    name:        'LITECOIN',
+    name:        'TURBO STRIKER',
     description: 'Compra DIGITEVEN (1 tick) no Volatility 100 (1s) Index após uma sequência de dígitos ímpares seguidos. Na 1ª perda, tenta recuperar 100% do valor + 10% consultando o payout real. Em perdas seguidas, protege a banca entrando com stake reduzido em vez de continuar escalando. Recomendado apenas em conta demo.',
     strategy:    'even_odd_recovery',
     tags:        ['digitos', 'gale', 'recuperação', 'risco-alto', 'demo'],
