@@ -18,7 +18,7 @@ import logger from '@utils/logger.js';
 
 const CATALOG_BOTS: CreateCatalogBotDto[] = [
   {
-    name: 'GPT5.6',
+    name: 'TITAN',
     description: 'CALL de 5 ticks com D\'Alembert: +$1 após perda, −$1 após ganho, teto de $10. Para ao atingir $20 de perda ou $50 de lucro. Recomendado apenas em conta demo.',
     strategy: 'dalembert',
     tags: ['dalembert', 'risco-medio', 'demo'],
@@ -31,7 +31,7 @@ const CATALOG_BOTS: CreateCatalogBotDto[] = [
     },
   },
   {
-    name: 'MORGAM',
+    name: 'COLOSSAL',
     description: 'CALL de 5 ticks com Martingale: duplica o stake após cada perda e reseta no ganho. Progressão máxima $1→$64. Risco elevado. Recomendado apenas em conta demo.',
     strategy: 'martingale',
     tags: ['martingale', 'risco-alto', 'demo'],
@@ -44,7 +44,7 @@ const CATALOG_BOTS: CreateCatalogBotDto[] = [
     },
   },
   {
-    name: 'SCALPER',
+    name: 'PLUS ULTRA',
     description: 'DIGITOVER 2 (1 tick) no Volatility 100 (1s) com Martingale x2. Risco elevado. Recomendado apenas em conta demo.',
     strategy: 'martingale',
     tags: ['digitos', 'martingale', 'risco-alto', 'demo'],
@@ -57,7 +57,7 @@ const CATALOG_BOTS: CreateCatalogBotDto[] = [
     },
   },
   {
-    name: 'ALFHA',
+    name: 'HERMES',
     description: 'DIGITUNDER 7 (1 tick) no Volatility 100 Index com Martingale x2. Risco elevado. Recomendado apenas em conta demo.',
     strategy: 'martingale',
     tags: ['digitos', 'martingale', 'risco-alto', 'demo'],
@@ -70,7 +70,7 @@ const CATALOG_BOTS: CreateCatalogBotDto[] = [
     },
   },
   {
-    name: 'ETHEREUM',
+    name: 'ZEUS',
     description: 'DIGITOVER 1 (1 tick) com D\'Alembert: +$0.50 após perda, −$0.50 após ganho, teto de $10. Recomendado apenas em conta demo.',
     strategy: 'dalembert',
     tags: ['digitos', 'dalembert', 'demo'],
@@ -83,7 +83,7 @@ const CATALOG_BOTS: CreateCatalogBotDto[] = [
     },
   },
   {
-    name: 'LITECOIN',
+    name: 'KRONOS',
     description: 'DIGITEVEN (1 tick) com Martingale x2, teto de $16. Recomendado apenas em conta demo.',
     strategy: 'martingale',
     tags: ['digitos', 'par-impar', 'martingale', 'risco-alto', 'demo'],
@@ -96,7 +96,7 @@ const CATALOG_BOTS: CreateCatalogBotDto[] = [
     },
   },
   {
-    name: 'BITCOIN',
+    name: 'TURBO STRIKER',
     description: 'DIGITODD (1 tick) com D\'Alembert: +$0.50 após perda, −$0.50 após ganho, teto de $10. Recomendado apenas em conta demo.',
     strategy: 'dalembert',
     tags: ['digitos', 'par-impar', 'dalembert', 'demo'],
