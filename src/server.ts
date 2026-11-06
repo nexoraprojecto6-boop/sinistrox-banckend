@@ -1,51 +1,10 @@
 // ============================================================
-// NEXORA FOREX — Server v2.1
+// NEXORA FOREX — Server v3 (auto_* da Deriv)
 // ============================================================
-// Correcções vs v1 (além das já documentadas na versão anterior):
-//   ✅ Tráfego dos bots já NÃO é reencaminhado ao frontend: o router
-//      devolve se consumiu a mensagem (buy/proposal/poc/ticks dos bots
-//      geravam 3–5 mensagens inúteis por trade e por tick)
-//   ✅ Parse JSON único por mensagem Deriv (router.dispatch)
-//   ✅ Os bots SOBREVIVEM a reconexões do WS Deriv (antes: stopAll() +
-//      novo BotManager a cada queda → bots perdidos). O adapter volta a
-//      subscrever ticks/contratos na nova ligação.
-//   ✅ Keep-alive para a Deriv (ping a cada 30 s com deteção de ligação
-//      morta). Antes só se fazia ping ao cliente.
-//   ✅ Reconexão: 1ª tentativa em ~0,5 s (era 3 s); sem dupla contagem
-//      quando a ligação falha antes de abrir
-//   ✅ forget_all do frontend só cancela as subscrições DO FRONTEND
-//      (antes matava os ticks dos bots, que partilham a ligação)
-//   ✅ req_id do frontend < 1.000.000; o alocador interno usa >= 1.000.000
-//      (um req_id pequeno do cliente podia resolver o pedido de um bot)
-//   ✅ Operar Manual usa o adapter (buy directo, 1 viagem; dígito final
-//      a partir de exit_spot com as casas decimais reais do símbolo —
-//      lastDigitFromPrice usava toFixed(2): errado para R_10/R_50)
-//   ✅ Autenticação não reentra (url token + msg auth em simultâneo
-//      criavam dois WS Deriv, um deles órfão)
-//   ✅ Cliente "morto" detectado (ping/pong com isAlive) → sessão e bots
-//      libertados; limite de payload e de mensagens/s por cliente
-//
-// Novo na v2.1 (anti-429 da Deriv — "Unexpected server response: 429"):
-//   ✅ FUGA de ligações corrigida: se o cliente saía a meio da
-//      autenticação (reload/fechar separador), a ligação à Deriv abria
-//      depois da limpeza e ficava órfã para sempre (ping incluído),
-//      ocupando um dos 5 slots por utilizador. Agora é fechada.
-//   ✅ Fecho limpo (close frame + espera pelo 'close', máx. 1 s) do WS
-//      da Deriv em trocas de conta, sessão duplicada e limpeza. Antes:
-//      terminate() (TCP destruído sem close frame) e a nova ligação
-//      abria logo a seguir, com o slot ainda ocupado do lado da Deriv.
-//   ✅ Lock por conta: sessão duplicada + OTP + handshake correm UM de
-//      cada vez por accountId (antes: rajada de pedidos em paralelo).
-//   ✅ Espaçamento mínimo de 1 s entre handshakes da mesma conta.
-//   ✅ Retry NO SERVIDOR (até 5 tentativas, OTP novo em cada uma, backoff
-//      curto com jitter: 0,6/1,2/2,4/4,8 s; em 429 o dobro). Antes: 1 falha → AUTH_TEMPORARY →
-//      ws.close() → o frontend reconectava e repetia o ciclo todo.
-//   ✅ Reconexão da Deriv respeita o lock/espaçamento e não corre em
-//      paralelo com uma autenticação; em 429 espera ≥ 5 s.
-//   ✅ Pedido de auth durante outra auth já não é descartado: guarda o
-//      último e corre-o a seguir (trocas de conta demo ↔ real).
-//
-// Adicionado: rota GET / com a meta tag de verificação de domínio da Deriv.
+// Bots = runs auto_* da Deriv (martingale | dalembert).
+// Mantém: anti-429 (lock por conta, retry com OTP novo, fecho limpo),
+// keep-alive Deriv, parse único por mensagem, forget_all seletivo,
+// Operar Manual via adapter, rota GET / para verificação Deriv.
 // ============================================================
 
 import 'express-async-errors';
@@ -75,7 +34,9 @@ import { DerivAPIService, DerivTokenExpiredError, isHandshakeRateLimited } from 
 import { BotManager }      from './bots/bot.manager.js';
 import { BotCatalog }      from './bots/bot-catalog.js';
 import { createDerivWsAdapter } from './bots/deriv-ws.adapter.js';
-import { BotEvent, BotConfig, BotStrategyType, DerivWsAdapter } from './bots/bot.types.js';
+import {
+  BotEvent, BotConfig, BotStrategyType, DerivWsAdapter, AutoStrategyParams,
+} from './bots/bot.types.js';
 import type { SymbolResolution } from './bots/strategies/base.strategy.js';
 import { seedBotCatalog } from './bots/catalog-seed.js';
 import { attachExternalRouter, destroyMessageRouter, getMessageRouter } from './bots/message-router.js';
@@ -90,20 +51,20 @@ const RECONNECT_BASE_MS    = 500;
 const RECONNECT_MAX_MS     = 30_000;
 const RECONNECT_MAX_TRIES  = 8;
 const WS_WAIT_TIMEOUT_MS   = 20_000;
-const DERIV_PING_MS        = 30_000;   // Deriv: ping a cada 30 s
+const DERIV_PING_MS        = 30_000;
 const DERIV_PING_TIMEOUT   = 10_000;
 const CLIENT_MAX_PAYLOAD   = 1_000_000;
 const CLIENT_MSGS_PER_SEC  = 60;
-const CLIENT_REQ_ID_LIMIT  = 1_000_000; // req_id do cliente < 1M; internos >= 1M
+const CLIENT_REQ_ID_LIMIT  = 1_000_000;
 const MAX_CLIENT_SUBS      = 200;
 
 // ─── Ligação à Deriv (anti-429) ───────────────────────────────
-const UPSTREAM_CLOSE_WAIT_MS        = 1_000; // espera pelo close frame antes de terminate()
-const UPSTREAM_MIN_GAP_MS           = 1_000; // mínimo entre handshakes da mesma conta
-const UPSTREAM_CONNECT_TRIES        = 5;     // tentativas por autenticação
-const UPSTREAM_RETRY_BASE_MS        = 600;   // 0,6 / 1,2 / 2,4 / 4,8 s (o dobro em 429)
+const UPSTREAM_CLOSE_WAIT_MS        = 1_500;
+const UPSTREAM_MIN_GAP_MS           = 1_500;
+const UPSTREAM_CONNECT_TRIES        = 4;
+const UPSTREAM_RETRY_BASE_MS        = 1_500;
 const UPSTREAM_RETRY_MAX_MS         = 8_000;
-const UPSTREAM_RATE_LIMIT_FLOOR_MS  = 5_000; // reconexão após 429: espera mínima
+const UPSTREAM_RATE_LIMIT_FLOOR_MS  = 5_000;
 
 // ─── Admins ───────────────────────────────────────────────────
 const ADMIN_IDS = new Set<string>(
@@ -136,14 +97,18 @@ interface ClientSession {
   reconnectAttempts:    number;
   authenticated:        boolean;
   authenticating:       boolean;
-  pendingAuth:          { token: string; accountId?: string } | null; // último auth pedido durante outro
+  pendingAuth:          { token: string; accountId?: string } | null;
   isAdmin:              boolean;
   isAlive:              boolean;
   botManager:           BotManager | null;
   nextReqId:            number;
-  clientSubs:           Map<string, string>; // subscription.id → msg_type (só do frontend)
+  clientSubs:           Map<string, string>;
   symbolsCache:         { at: number; list: ActiveSymbol[] } | null;
   symbolsByTypes:       Map<string, { at: number; list: ActiveSymbol[] }>;
+  /** Mercado pedido pelo gráfico do frontend (sobrevive a reconexões da Deriv). */
+  chartReq:             { symbol: string; count: number } | null;
+  chartStream:          { close: () => void } | null;
+  chartSeq:             number;
   msgWindowStart:       number;
   msgCount:             number;
 }
@@ -175,21 +140,16 @@ function sendError(ws: WebSocket, message: string, code = 'ERROR'): void {
   sendToClient(ws, 'error', { payload: { code, message } });
 }
 
-// ids internos do server (< 1M): 900000+ para não colidir com os do frontend
 function getNextReqId(session: ClientSession): number {
   session.nextReqId = session.nextReqId >= CLIENT_REQ_ID_LIMIT - 1 ? 900_000 : session.nextReqId + 1;
   return session.nextReqId;
 }
 
-/** 429 do handshake do WS ou do REST (OTP/contas). */
 function isRateLimited(err: unknown): boolean {
   return isHandshakeRateLimited(err) || (err as { status?: number } | null)?.status === 429;
 }
 
 // ─── Encerrar derivWs com segurança ───────────────────────────
-// terminate() imediato: usar só em ligações já mortas/falhadas ou
-// quando não vale a pena esperar. Para trocas de conta/limpeza de
-// sessão usar closeDerivWsGracefully().
 function safeTerminateDerivWs(session: ClientSession): void {
   if (session.derivPingInterval) {
     clearInterval(session.derivPingInterval);
@@ -204,11 +164,8 @@ function safeTerminateDerivWs(session: ClientSession): void {
     session.derivMessageHandler = null;
   }
 
-  // removeAllListeners() também remove o 'close' do router → destruir à mão
   destroyMessageRouter(ws);
   ws.removeAllListeners();
-
-  // Absorve o 'error' do abortHandshake (CONNECTING) e qualquer erro tardio.
   ws.on('error', () => { /* esperado */ });
 
   try {
@@ -218,12 +175,6 @@ function safeTerminateDerivWs(session: ClientSession): void {
   }
 }
 
-/**
- * Fecha a ligação à Deriv com close frame e espera (máx. waitMs) pelo
- * 'close', para a Deriv libertar o slot ANTES de abrirmos outra. Limite
- * da Deriv: 5 ligações simultâneas por utilizador.
- * Também faz session.derivWs = null.
- */
 function closeDerivWsGracefully(
   session: ClientSession,
   waitMs = UPSTREAM_CLOSE_WAIT_MS,
@@ -237,9 +188,6 @@ function closeDerivWsGracefully(
   if (!ws) return Promise.resolve();
   session.derivWs = null;
 
-  // Ainda a ligar: terminate() faz o handshake falhar logo e o listener de
-  // erro de connectToDerivWS rejeita a promessa (sem ficar 10 s pendurada).
-  // Os listeners ficam de propósito.
   if (ws.readyState === WebSocket.CONNECTING) {
     destroyMessageRouter(ws);
     ws.on('error', () => { /* esperado */ });
@@ -274,6 +222,69 @@ function closeDerivWsGracefully(
       resolve();
     }
   });
+}
+
+// ─── Gráfico: ticks_snapshot + stream de ticks da sessão ──────
+// O frontend já não abre WS próprio à Deriv. Pede `subscribe_ticks` e
+// recebe: 1× `ticks_snapshot` (histórico) + `tick` a cada tick novo
+// (o `tick` é reencaminhado por buildDerivMessageHandler).
+const CHART_SYMBOL_RE = /^[A-Za-z0-9_]{2,32}$/;
+const CHART_MAX_COUNT = 5000;
+
+function stopChartStream(session: ClientSession): void {
+  if (session.chartStream) {
+    try { session.chartStream.close(); } catch { /* ligação a fechar */ }
+    session.chartStream = null;
+  }
+}
+
+async function startChartTicks(ws: WebSocket, session: ClientSession): Promise<void> {
+  const req = session.chartReq;
+  if (!req) return;
+  const seq = ++session.chartSeq;                   // invalida pedidos anteriores
+  const stale = () => seq !== session.chartSeq || !sessions.has(ws);
+
+  stopChartStream(session);
+
+  let derivWs: WebSocket;
+  try { derivWs = await waitForDerivWs(session, 8_000); }
+  catch { if (!stale()) sendError(ws, 'Deriv indisponível para o gráfico', 'CHART_UNAVAILABLE'); return; }
+  if (stale()) return;
+
+  const router = getMessageRouter(derivWs);
+
+  // 1) histórico (snapshot) — falha aqui não impede o stream em direto
+  try {
+    const res = await router.request(
+      { ticks_history: req.symbol, end: 'latest', count: req.count, style: 'ticks' },
+      nextReqId(), 15_000,
+    );
+    if (stale()) return;
+    const history = res.history as { prices?: number[] } | undefined;
+    sendToClient(ws, 'ticks_snapshot', {
+      payload: {
+        symbol: req.symbol,
+        prices: Array.isArray(history?.prices) ? history!.prices : [],
+        pip_size: res.pip_size,
+      },
+    });
+  } catch (err: any) {
+    if (stale()) return;
+    logger.warn('[WS] ticks_history falhou', { symbol: req.symbol, error: err?.message });
+    sendError(ws, `Sem histórico para ${req.symbol}: ${err?.message ?? 'erro'}`, 'CHART_HISTORY_ERROR');
+  }
+
+  // 2) stream em direto (o `tick` chega ao cliente pelo proxy normal)
+  const handle = router.openStream(`ticks:${req.symbol}`, { ticks: req.symbol }, {
+    onMessage: () => { /* reencaminhado por buildDerivMessageHandler */ },
+    onError: (err) => {
+      if (stale()) return;
+      sendError(ws, `Mercado ${req.symbol}: ${err.message}`, 'CHART_STREAM_ERROR');
+    },
+    onDisconnect: () => { if (session.chartSeq === seq) session.chartStream = null; },
+  });
+  if (stale()) { handle.close(); return; }
+  session.chartStream = handle;
 }
 
 // ─── Aguardar WS disponível ───────────────────────────────────
@@ -345,18 +356,14 @@ function buildDerivMessageHandler(
     let msg: Record<string, unknown>;
     try { msg = JSON.parse(raw.toString('utf8')); } catch { return; }
 
-    // Parse único: o router trata o tráfego dos bots (e do Operar Manual).
-    // Se consumiu a mensagem, não a reencaminhamos ao frontend — EXCETO os
-    // ticks: o gráfico/dígitos do dashboard alimentam-se dos ticks que os
-    // bots subscrevem, por isso continuam a ser reenviados.
+    // Parse único: o router trata o tráfego dos bots (auto_*, poc) e do
+    // Operar Manual. Se consumiu a mensagem, não a reencaminhamos ao frontend
+    // (exceto ticks).
     const consumed = router.dispatch(msg);
     if (consumed && msg.msg_type !== 'tick') return;
 
     if (msg.msg_type === 'ping' || msg.msg_type === 'pong') return;
 
-    // Regista subscrições abertas PELO frontend (para o forget_all seletivo).
-    // Ticks consumidos pelo router são dos BOTS: nunca entram aqui, senão um
-    // forget_all do frontend cancelaria a subscrição dos bots.
     const subId = (msg.subscription as { id?: string } | undefined)?.id;
     const mt = msg.msg_type as string | undefined;
     if (!consumed && subId && mt && mt !== 'balance' && mt !== 'transaction'
@@ -431,11 +438,10 @@ async function connectToDerivWS(
     const router = attachExternalRouter(derivWs);
     let opened = false;
 
-    // listener de erro PERMANENTE e registado já (antes de qualquer terminate)
     derivWs.on('error', (err) => {
       clearTimeout(timeout);
       logger.error('[WS] Deriv WS error', { message: err.message });
-      reject(err); // no-op se já resolvida
+      reject(err);
     });
 
     const timeout = setTimeout(() => {
@@ -452,8 +458,6 @@ async function connectToDerivWS(
       session.derivMessageHandler = handler;
       derivWs.on('message', handler);
 
-      // Keep-alive (Deriv recomenda ping a cada 30 s). Se não responder,
-      // termina a ligação → o 'close' dispara a reconexão.
       if (session.derivPingInterval) clearInterval(session.derivPingInterval);
       session.derivPingInterval = setInterval(() => {
         if (derivWs.readyState !== WebSocket.OPEN) return;
@@ -474,7 +478,6 @@ async function connectToDerivWS(
         derivWs.removeListener('message', session.derivMessageHandler);
         session.derivMessageHandler = null;
       }
-      // socket substituído entretanto: este close já não interessa
       if (session.derivWs !== derivWs) return;
 
       if (session.derivPingInterval) {
@@ -482,10 +485,10 @@ async function connectToDerivWS(
         session.derivPingInterval = null;
       }
       session.derivWs = null;
-      session.clientSubs.clear(); // ids de subscrição morrem com a ligação
+      session.clientSubs.clear();
       logger.warn('[WS] Deriv WS disconnected', { code, reason: reason?.toString(), opened });
 
-      if (!opened) return; // falhou ao ligar: o chamador (reject) trata da nova tentativa
+      if (!opened) return;
 
       if (clientWs.readyState === WebSocket.OPEN) {
         sendToClient(clientWs, 'deriv_disconnected', { message: 'Deriv WS desconectado. A reconectar...' });
@@ -496,8 +499,6 @@ async function connectToDerivWS(
 }
 
 // ─── Lock por conta + espaçamento entre handshakes ────────────
-// Sessão duplicada + OTP + handshake de UMA conta correm um de cada vez;
-// e há um intervalo mínimo entre handshakes da mesma conta.
 
 const accountLocks = new Map<string, Promise<unknown>>();
 const lastHandshakeAt = new Map<string, number>();
@@ -528,11 +529,6 @@ async function waitHandshakeGap(accountId: string): Promise<void> {
   if (wait > 0) await sleep(wait);
 }
 
-/**
- * OTP novo + handshake com a Deriv, com retry no servidor (backoff com
- * jitter; o dobro quando é 429). O cliente do frontend não é fechado
- * entre tentativas. Chamar SEMPRE dentro de withAccountLock.
- */
 async function openUpstream(
   clientWs: WebSocket,
   session: ClientSession,
@@ -549,13 +545,10 @@ async function openUpstream(
     await waitHandshakeGap(accountId);
 
     try {
-      // OTP é de uso único: um novo em CADA tentativa
       const otpData = await derivAPI.getOTP(accountId);
       noteHandshake(accountId);
       await connectToDerivWS(clientWs, otpData.url, session);
 
-      // O cliente pode ter saído enquanto ligávamos: fechar já, senão a
-      // ligação à Deriv ficava órfã (e ocupava um dos 5 slots).
       if (clientWs.readyState !== WebSocket.OPEN || !sessions.has(clientWs)) {
         await closeDerivWsGracefully(session);
         throw new Error('Cliente desligou durante a autenticação');
@@ -563,10 +556,9 @@ async function openUpstream(
       return;
     } catch (err) {
       lastErr = err;
-      if (err instanceof DerivTokenExpiredError) throw err; // repetir não adianta
+      if (err instanceof DerivTokenExpiredError) throw err;
       if (clientWs.readyState !== WebSocket.OPEN || !sessions.has(clientWs)) throw err;
 
-      // socket falhado ainda pendurado em session.derivWs
       if (session.derivWs) safeTerminateDerivWs(session);
       session.derivWs = null;
 
@@ -617,7 +609,6 @@ function scheduleDerivReconnect(clientWs: WebSocket, session: ClientSession, rat
 
   session.reconnectTimer = setTimeout(async () => {
     session.reconnectTimer = null;
-    // Se há uma autenticação em curso, é ela que trata da ligação
     if (clientWs.readyState !== WebSocket.OPEN || session.authenticating) return;
     const accountId = session.accountId;
     if (!accountId) return;
@@ -629,12 +620,10 @@ function scheduleDerivReconnect(clientWs: WebSocket, session: ClientSession, rat
         await waitHandshakeGap(accountId);
         const derivAPI = new DerivAPIService(session.token);
         const otpData  = await derivAPI.getOTP(accountId);
-        // descarta um socket falhado que ainda esteja pendurado
         if (session.derivWs) safeTerminateDerivWs(session);
         noteHandshake(accountId);
         await connectToDerivWS(clientWs, otpData.url, session);
 
-        // cliente saiu enquanto ligávamos: não deixar a ligação órfã
         if (clientWs.readyState !== WebSocket.OPEN || !sessions.has(clientWs)) {
           await closeDerivWsGracefully(session);
           return;
@@ -642,10 +631,10 @@ function scheduleDerivReconnect(clientWs: WebSocket, session: ClientSession, rat
 
         session.reconnectAttempts = 0;
 
-        // Os bots NÃO são parados: o adapter lê session.derivWs e volta a
-        // subscrever ticks/contratos sozinho na nova ligação.
+        // Os bots NÃO são parados: re-anexam-se ao run (auto_get) sozinhos.
         if (!session.botManager) initBotManagerForSession(clientWs, session);
         sendToClient(clientWs, 'deriv_reconnected', { message: 'Conexão Deriv restabelecida' });
+        if (session.chartReq) void startChartTicks(clientWs, session);
       });
     } catch (err: any) {
       logger.error('[WS] Falha na reconexão Deriv', { error: err.message });
@@ -676,8 +665,6 @@ function initBotManagerForSession(clientWs: WebSocket, session: ClientSession): 
 }
 
 // ─── Disponibilidade por conta/país ───────────────────────────
-// O que a Deriv oferece varia por país, conta e hora (forex fecha ao
-// fim de semana). Consultamos active_symbols da PRÓPRIA conta.
 
 const SYMBOLS_TTL_MS = 5 * 60_000;
 
@@ -692,31 +679,21 @@ async function getAccountSymbols(session: ClientSession): Promise<ActiveSymbol[]
   return list;
 }
 
-// ─── Mudança automática de mercado ────────────────────────────
-// Se o mercado do bot estiver fechado, suspenso ou não for oferecido a
-// esta conta/país, o bot passa para outro mercado ABERTO que ofereça o
-// mesmo tipo de contrato. Ordem de preferência:
-//   1) strategyParams.fallbackSymbols (lista do catálogo, por ordem)
-//   2) mesmo submercado  →  3) mesmo mercado  →  4) qualquer mercado aberto
-// Variáveis de ambiente:
+// ─── Verificação de mercado antes de iniciar ──────────────────
+// Se o mercado estiver fechado/suspenso/indisponível para a conta, o bot
+// passa para outro mercado aberto (mesmo submercado → mercado → fallbacks).
+// No modelo auto_* a verificação corre só ao iniciar (o símbolo fica fixo
+// no run). Variáveis de ambiente:
 //   SYMBOL_FAILOVER=0               desliga a mudança automática
-//   SYMBOL_FAILOVER_ANY_MARKET=0    só muda dentro do mesmo mercado
+//   SYMBOL_FAILOVER_ANY_MARKET=1    permite mudar para QUALQUER mercado
 const FAILOVER_ENABLED    = process.env.SYMBOL_FAILOVER !== '0';
-const FAILOVER_ANY_MARKET = process.env.SYMBOL_FAILOVER_ANY_MARKET !== '0';
+const FAILOVER_ANY_MARKET = process.env.SYMBOL_FAILOVER_ANY_MARKET === '1';
 const TYPED_SYMBOLS_TTL_MS = 30_000;
 
-function contractTypesFor(strategy: BotStrategyType, config: BotConfig): string[] {
-  const p = (config.strategyParams ?? {}) as Record<string, unknown>;
-  switch (strategy) {
-    case 'alfha':             return ['DIGITOVER', 'DIGITUNDER'];
-    case 'scalper':
-    case 'over1_recovery':    return ['DIGITOVER'];
-    case 'even_odd_recovery': return [p.targetParity === 'odd' ? 'DIGITODD' : 'DIGITEVEN'];
-    default:                  return ['CALL', 'PUT']; // martingale, scalping, trend_following
-  }
+function contractTypesFor(_strategy: BotStrategyType, config: BotConfig): string[] {
+  return [config.contractType];
 }
 
-/** Símbolos que a conta pode operar para estes tipos de contrato (cache curto: o estado aberto/fechado muda). */
 async function getSymbolsFor(session: ClientSession, types: string[]): Promise<ActiveSymbol[]> {
   const key = types.join(',');
   const cached = session.symbolsByTypes.get(key);
@@ -730,7 +707,6 @@ async function getSymbolsFor(session: ClientSession, types: string[]): Promise<A
     );
     list = (res.active_symbols as ActiveSymbol[] | undefined) ?? [];
   } catch (err: any) {
-    // filtro por contrato recusado → lista completa da conta
     logger.warn('[WS] active_symbols com contract_type falhou — a usar lista completa', { error: err?.message });
     list = await getAccountSymbols(session);
   }
@@ -816,12 +792,11 @@ async function handleBotMessage(
 
         const finalConfig: BotConfig = {
           ...catalogBot.defaultConfig, ...configOverride,
-          // SEMPRE a moeda da conta ativa (EUR, GBP, BTC…): o catálogo traz "USD"
-          // e comprar com a moeda errada faz a Deriv rejeitar todos os contratos.
+          // SEMPRE a moeda da conta ativa (EUR, GBP, BTC…)
           currency: session.currency || 'USD',
           strategyParams: {
             ...(catalogBot.defaultConfig.strategyParams ?? {}),
-            ...((configOverride.strategyParams as Record<string, unknown>) ?? {}),
+            ...((configOverride.strategyParams as AutoStrategyParams) ?? {}),
           },
         };
 
@@ -847,7 +822,12 @@ async function handleBotMessage(
           name: (payload.sessionName as string) ?? catalogBot.name,
           strategy: catalogBot.strategy, config: finalConfig,
         });
-        await manager.startBot(created.id);
+        try {
+          await manager.startBot(created.id);
+        } catch (e) {
+          await manager.deleteBot(created.id);
+          throw e;
+        }
         sendToClient(ws, 'bot_created', { payload: { ...manager.getBotState(created.id), catalogBotId } });
         break;
       }
@@ -862,7 +842,7 @@ async function handleBotMessage(
       case 'pause_bot': {
         const botId = payload.botId as string;
         if (!botId) { sendError(ws, 'botId obrigatório.', 'MISSING_PARAM'); break; }
-        manager.pauseBot(botId);
+        await manager.pauseBot(botId);
         sendToClient(ws, 'bot_paused', { payload: { botId } }); break;
       }
 
@@ -879,7 +859,7 @@ async function handleBotMessage(
       case 'delete_bot': {
         const botId = payload.botId as string;
         if (!botId) { sendError(ws, 'botId obrigatório.', 'MISSING_PARAM'); break; }
-        await manager.deleteBot(botId); // agora async (aguarda o stop)
+        await manager.deleteBot(botId);
         sendToClient(ws, 'bot_deleted', { payload: { botId } }); break;
       }
 
@@ -925,9 +905,6 @@ async function handleBotMessage(
 }
 
 // ─── Compra manual ────────────────────────────────────────────
-// Usa o adapter (buy directo: 1 viagem de rede) e acompanha o fecho
-// com o mesmo mecanismo dos bots. O dígito final vem de exit_spot
-// (string) com as casas decimais reais do símbolo.
 
 const DIGIT_CONTRACT_TYPES = new Set([
   'DIGITOVER', 'DIGITUNDER', 'DIGITMATCH', 'DIGITDIFF', 'DIGITODD', 'DIGITEVEN',
@@ -942,8 +919,6 @@ async function handleManualBuy(
   const durationUnit = payload.durationUnit as string;
   const stake        = Number(payload.stake);
   const barrier      = payload.barrier;
-  // o frontend envia um clientRef e recebe-o de volta: liga cada resposta ao pedido
-  // certo (várias compras seguidas já não trocam os dados entre si)
   const clientRef    = typeof payload.clientRef === 'string' ? payload.clientRef : undefined;
 
   const fail = (error: string) =>
@@ -969,7 +944,7 @@ async function handleManualBuy(
       contractType,
       stake,
       duration,
-      durationUnit, // o adapter converte 'ticks' → 't'
+      durationUnit,
       currency: session.currency || 'USD',
       ...(DIGIT_CONTRACT_TYPES.has(contractType) && barrier !== undefined && barrier !== null && barrier !== ''
         ? { barrier: String(barrier) }
@@ -981,12 +956,11 @@ async function handleManualBuy(
         clientRef,
         success: true,
         contractId: bought.contractId,
-        payout: (bought as { payout?: number }).payout,
+        payout: bought.payout,
       },
     });
 
-    // Fecho do contrato (não bloqueia o handler)
-    adapter.waitForContract(bought.contractId)
+    adapter.watchContract(bought.contractId)
       .then((res) => {
         sendToClient(ws, 'manual_trade_closed', {
           payload: {
@@ -996,13 +970,12 @@ async function handleManualBuy(
             won: res.won,
             stake,
             exitTick: res.exitTick || undefined,
-            exitDigit: (res as { exitDigit?: number }).exitDigit,
+            exitDigit: res.exitDigit,
           },
         });
       })
       .catch((err: Error) => {
         logger.error('[WS] Erro ao acompanhar contrato manual', { contractId: bought.contractId, error: err.message });
-        // o frontend desbloqueia o ecrã (o contrato pode ainda estar aberto na Deriv)
         sendToClient(ws, 'manual_trade_error', {
           payload: {
             clientRef,
@@ -1024,8 +997,6 @@ async function authenticateClient(ws: WebSocket, token: string, accountId?: stri
   if (!session) return;
 
   if (session.authenticating) {
-    // Autenticação em curso: guarda o ÚLTIMO pedido (ex: troca demo ↔ real)
-    // e corre-o quando a atual terminar, em vez de o descartar.
     session.pendingAuth = { token, accountId };
     return;
   }
@@ -1041,9 +1012,10 @@ async function authenticateClient(ws: WebSocket, token: string, accountId?: stri
     }
 
     if (session.reconnectTimer) { clearTimeout(session.reconnectTimer); session.reconnectTimer = null; }
-    // fecho limpo: a Deriv liberta o slot antes de abrirmos a nova ligação
     await closeDerivWsGracefully(session);
     session.clientSubs.clear();
+    session.chartStream = null;          // o stream morreu com o upstream antigo
+    session.chartSeq++;                  // invalida arranques de gráfico em curso
     session.symbolsCache = null;
     session.symbolsByTypes.clear();
 
@@ -1059,18 +1031,16 @@ async function authenticateClient(ws: WebSocket, token: string, accountId?: stri
 
     const targetAccountId = target.account_id;
 
-    // Sessão duplicada + OTP + handshake: um de cada vez por conta
     const connected = await withAccountLock(targetAccountId, async (): Promise<boolean> => {
-      if (!sessions.has(ws)) return false; // o cliente já saiu enquanto esperava
+      if (!sessions.has(ws)) return false;
 
       const existingWs = sessionsByAccount.get(targetAccountId);
       if (existingWs && existingWs !== ws) {
         logger.warn('[WS] Sessão duplicada detectada, a fechar a antiga', { accountId: targetAccountId });
-        await cleanupSession(existingWs); // espera o fecho da ligação à Deriv
+        await cleanupSession(existingWs);
         existingWs.close(1001, 'Sessão substituída por nova conexão');
       }
 
-      // troca de conta: libertar o registo da conta anterior
       if (session.accountId && session.accountId !== targetAccountId
           && sessionsByAccount.get(session.accountId) === ws) {
         sessionsByAccount.delete(session.accountId);
@@ -1116,11 +1086,8 @@ async function authenticateClient(ws: WebSocket, token: string, accountId?: stri
   } catch (err: any) {
     logger.error('[WS] Authentication failed', { error: err.message });
     if (err instanceof DerivTokenExpiredError) {
-      // token inválido/expirado: o frontend deve terminar a sessão
       sendError(ws, 'A sessão Deriv expirou. Faça login novamente.', 'AUTH_FAILED');
     } else {
-      // falha temporária (rede, Deriv em baixo, 429): NÃO terminar a sessão.
-      // O frontend reconecta com backoff longo ao receber AUTH_TEMPORARY.
       sendError(
         ws,
         isRateLimited(err)
@@ -1133,7 +1100,6 @@ async function authenticateClient(ws: WebSocket, token: string, accountId?: stri
   } finally {
     session.authenticating = false;
 
-    // houve outro pedido de auth enquanto este corria: processa o último
     const next = session.pendingAuth;
     session.pendingAuth = null;
     if (next && ws.readyState === WebSocket.OPEN && sessions.has(ws)) {
@@ -1161,12 +1127,12 @@ async function cleanupSession(ws: WebSocket): Promise<void> {
   if (session.reconnectTimer) clearTimeout(session.reconnectTimer);
   session.pendingAuth = null;
 
+  // Para os runs na Deriv (auto_stop) ANTES de fechar a ligação
   if (session.botManager) {
     try { await session.botManager.stopAll(); } catch { /* ignorar */ }
     session.botManager.removeAllListeners();
   }
 
-  // fecho limpo (close frame): liberta o slot na Deriv de imediato
   await closeDerivWsGracefully(session);
   session.adapter = null;
 }
@@ -1197,11 +1163,11 @@ wss.on('connection', (ws: WebSocket, req: http.IncomingMessage) => {
     reconnectAttempts: 0, authenticated: false, authenticating: false, pendingAuth: null,
     isAdmin: false, isAlive: true,
     botManager: null, nextReqId: 900_000,
-    clientSubs: new Map(), symbolsCache: null, symbolsByTypes: new Map(), msgWindowStart: 0, msgCount: 0,
+    clientSubs: new Map(), symbolsCache: null, symbolsByTypes: new Map(),
+    chartReq: null, chartStream: null, chartSeq: 0, msgWindowStart: 0, msgCount: 0,
   };
   sessions.set(ws, session);
 
-  // Ping ao cliente com deteção de ligação morta (half-open)
   session.pingInterval = setInterval(() => {
     if (!session.isAlive) {
       logger.warn('[WS] Cliente sem pong — a terminar sessão', { ip });
@@ -1226,9 +1192,8 @@ wss.on('connection', (ws: WebSocket, req: http.IncomingMessage) => {
   }
 
   ws.on('message', async (raw: Buffer) => {
-    session.isAlive = true; // qualquer tráfego prova que está vivo
+    session.isAlive = true;
 
-    // limite de mensagens por segundo
     const now = Date.now();
     if (now - session.msgWindowStart >= 1000) { session.msgWindowStart = now; session.msgCount = 0; }
     if (++session.msgCount > CLIENT_MSGS_PER_SEC) {
@@ -1265,6 +1230,28 @@ wss.on('connection', (ws: WebSocket, req: http.IncomingMessage) => {
       if (type === 'manual_buy') {
         if (!session.authenticated) { sendError(ws, 'Não autenticado', 'NOT_AUTH'); return; }
         await handleManualBuy(ws, session, payload);
+        return;
+      }
+
+      if (type === 'subscribe_ticks') {
+        if (!session.authenticated) { sendError(ws, 'Não autenticado', 'NOT_AUTH'); return; }
+        const symbol = String(payload.symbol ?? '');
+        if (!CHART_SYMBOL_RE.test(symbol)) { sendError(ws, 'Símbolo inválido', 'INVALID_SYMBOL'); return; }
+        const count = Math.min(CHART_MAX_COUNT, Math.max(1, Math.floor(Number(payload.count) || 1000)));
+        const cur = session.chartReq;
+        // mesmo pedido já activo: não repete (evita rajadas de pedidos à Deriv)
+        if (cur && cur.symbol === symbol && session.chartStream) {
+          return;
+        }
+        session.chartReq = { symbol, count };
+        void startChartTicks(ws, session);
+        return;
+      }
+
+      if (type === 'unsubscribe_ticks') {
+        session.chartReq = null;
+        session.chartSeq++;
+        stopChartStream(session);
         return;
       }
 
@@ -1312,14 +1299,12 @@ wss.on('connection', (ws: WebSocket, req: http.IncomingMessage) => {
         ? _p as Record<string, unknown>
         : rest as Record<string, unknown>;
 
-      // forget_all do frontend: só as suas subscrições (os bots partilham o WS)
       if ('forget_all' in rawPayload) {
         handleClientForgetAll(ws, session, rawPayload);
         return;
       }
       if (typeof rawPayload.forget === 'string') session.clientSubs.delete(rawPayload.forget);
 
-      // req_id do frontend fica abaixo de 1M; ids internos (bots) são >= 1M
       const existingReqId = rawPayload.req_id;
       const numericReqId = (typeof existingReqId === 'number' && Number.isInteger(existingReqId)
         && existingReqId > 0 && existingReqId < CLIENT_REQ_ID_LIMIT)
@@ -1356,7 +1341,6 @@ app.use(sanitizationMiddleware);
 app.use(urlEncodedMiddleware);
 app.use(requestLoggerMiddleware);
 
-// /health ANTES do rate limiter (o polling do Render recebia 429)
 app.get('/health', (_req, res) => {
   res.json({
     status: 'ok', timestamp: new Date().toISOString(),
@@ -1374,7 +1358,7 @@ app.get('/', (_req, res) => {
 <html lang="pt">
 <head>
   <meta charset="utf-8">
-  <meta name="deriv-site-verification" content="4705e6677369776b01c8026c292e1fe4f00041c9ce7f8dc1246a7aa1797f5c35">
+  <meta name="deriv-site-verification" content="852454070144d56e94ca6bbcdef0c7c58171e58d573588c914052ede2147ffed">
   <title>Nexora API</title>
 </head>
 <body>
@@ -1438,8 +1422,6 @@ const gracefulShutdown = async (signal: string) => {
   logger.info(`${signal} recebido, a encerrar...`);
   const forceExit = setTimeout(() => process.exit(1), 30_000);
   forceExit.unref?.();
-  // cleanupSession fecha o WS da Deriv com close frame (liberta o slot
-  // antes de a instância nova arrancar no deploy do Render)
   await Promise.allSettled([...sessions.keys()].map(async (clientWs) => {
     await cleanupSession(clientWs);
     clientWs.close();

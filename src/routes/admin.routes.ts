@@ -76,10 +76,6 @@ function monthRange(year: number, month: number): { from: string; to: string } {
  * sobre o aplicativo" / application_read) — nunca o token de sessão
  * de um utilizador comum.
  *
- * A Deriv devolve os totais de TODAS as apps do dono do token, mais
- * um `breakdown` por app_id. Aqui filtramos o breakdown pela app desta
- * plataforma (DERIV_APP_ID) para os valores serem só os da plataforma.
- *
  * A comissão total é dividida 50/50 entre "Kelvin" e "Plataforma"
  * (commission_split na resposta) — percentagem fixa, ajustável aqui
  * se o acordo mudar.
@@ -125,40 +121,7 @@ router.get('/markup-statistics', requireLocalAuth, requireAdmin, async (req: Req
   try {
     const deriv = new DerivAPIService(config.deriv.markupToken);
     const result = await deriv.getMarkupStatistics(dateFrom, dateTo);
-    const all = result.data;
-
-    // ── Só a app desta plataforma (DERIV_APP_ID) ──────────────
-    // Se a Deriv não devolver breakdown, não dá para filtrar: mantém-se
-    // os totais recebidos.
-    const hasBreakdown = Array.isArray(all.breakdown);
-    const mine = hasBreakdown
-      ? all.breakdown.find((b) => String(b.app_id) === String(config.deriv.appId))
-      : undefined;
-
-    if (hasBreakdown && !mine) {
-      logger.warn('[Admin] App da plataforma não encontrada no breakdown da Deriv', {
-        expectedAppId: config.deriv.appId,
-        appIdsNoRelatorio: all.breakdown.map((b) => b.app_id),
-      });
-    }
-
-    const totals = hasBreakdown
-      ? {
-          total_app_markup_usd: mine?.app_markup_usd ?? 0,
-          total_volume_usd:     mine?.volume_usd ?? 0,
-          total_payout_usd:     mine?.payout_usd ?? 0,
-          total_contract_count: mine?.contract_count ?? 0,
-          total_client_count:   mine?.client_count ?? 0,
-        }
-      : {
-          total_app_markup_usd: all.total_app_markup_usd ?? 0,
-          total_volume_usd:     all.total_volume_usd ?? 0,
-          total_payout_usd:     all.total_payout_usd ?? 0,
-          total_contract_count: all.total_contract_count ?? 0,
-          total_client_count:   all.total_client_count ?? 0,
-        };
-
-    const totalMarkup = totals.total_app_markup_usd;
+    const totalMarkup = result.data.total_app_markup_usd ?? 0;
 
     // Divisão fixa 50/50 — ajustar aqui se o acordo de parceria mudar.
     const KELVIN_PCT = 50;
@@ -174,13 +137,11 @@ router.get('/markup-statistics', requireLocalAuth, requireAdmin, async (req: Req
       admin: req.localUser?.email,
       dateFrom,
       dateTo,
-      appId: config.deriv.appId,
       totalMarkup,
     });
 
     res.json({
-      ...totals,
-      app_found: hasBreakdown ? Boolean(mine) : true,
+      ...result.data,
       date_from: dateFrom,
       date_to: dateTo,
       commission_split: commissionSplit,
